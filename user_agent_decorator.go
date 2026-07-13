@@ -1,6 +1,6 @@
 // Package uadeco user-agent decorator package
 // should be put on internal/ of the project's directory
-// serviceName should be changed base on the project name/directory
+// serviceName should be changed based on the project name/directory
 package uadeco
 
 import (
@@ -44,7 +44,7 @@ var DecoratedClient = &http.Client{
 // InitServiceName must be called on init of project's main or TestMain
 // for example:
 //
-//	uadec.InitServiceName("service1")
+//	uadeco.InitServiceName("service1")
 func InitServiceName(name string) {
 	defer ReplaceDefaultTransport()
 	serviceName = name
@@ -108,7 +108,7 @@ func HttpGet(url string) (*http.Response, error) {
 	return http.DefaultClient.Do(req)
 }
 
-// Transport class that stores haeder and original roundtripper
+// Transport class that stores header and original roundtripper
 type Transport struct {
 	headers map[string]string
 }
@@ -123,7 +123,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 // ReplaceDefaultTransport replace http.DefaultTransport with DecoratedTransport
 //
-//	also replaces http.DefaultClient with Decorated
+//	also replaces http.DefaultClient with DecoratedClient
 func ReplaceDefaultTransport() {
 	defaultHeaders[`User-Agent`] = userAgent
 	http.DefaultTransport = DecoratedTransport

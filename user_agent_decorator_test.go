@@ -4,88 +4,112 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/stretchr/testify/assert"
 )
 
-func TestCommitHash(t *testing.T) {
-	InitServiceName(`uadeco`)
-	if !strings.Contains(userAgent, `go1.19`) &&
-		!strings.Contains(userAgent, `go1.20`) {
-		t.Errorf(`Test run using outdated go version %v`, userAgent)
+func TestUserAgentIncludesServiceAndGoVersion(t *testing.T) {
+	ua := configureForTest(t, "uadeco")
+	if !strings.HasPrefix(ua, "uadeco/") {
+		t.Fatalf("user agent should include service prefix: %q", ua)
 	}
-	fmt.Println(userAgent)
+	if !strings.Contains(ua, runtime.Version()) {
+		t.Fatalf("user agent should include current Go version %q: %q", runtime.Version(), ua)
+	}
 }
 
-type FakeClient struct {
-	RoundTripFunc func(r *http.Request) (*http.Response, error)
-}
-
-func (s *FakeClient) RoundTrip(r *http.Request) (*http.Response, error) {
-	return s.RoundTripFunc(r)
-}
-
-func TestUADeco(t *testing.T) {
-	var rt http.RoundTripper = &FakeClient{
-		RoundTripFunc: func(r *http.Request) (*http.Response, error) {
-			assert.Equal(t, userAgent, r.Header.Get("User-Agent"))
-			return &http.Response{}, nil
-		},
+func TestNewHTTPRequestSetsUserAgent(t *testing.T) {
+	ua := configureForTest(t, "uadeco")
+	req, err := NewHttpRequest(http.MethodGet, "http://example.com", nil)
+	if err != nil {
+		t.Fatalf("NewHttpRequest error: %v", err)
 	}
-	req, err := NewHttpRequest("GET", "/", nil)
-	assert.Nil(t, err)
-	client := http.Client{
-		Transport: rt,
+	if got := req.Header.Get("User-Agent"); got != ua {
+		t.Fatalf("User-Agent want %q got %q", ua, got)
 	}
-	_, _ = client.Do(req)
 }
 
 func TestDecoratedClientTransport(t *testing.T) {
-	const testHost = `localhost:65533`
+	ua := configureForTest(t, "uadeco")
 
-	go func() {
-		http.HandleFunc(`/`, func(w http.ResponseWriter, r *http.Request) {
-			_, _ = fmt.Fprint(w, r.Header.Get(`user-agent`))
-		})
-		_ = http.ListenAndServe(testHost, nil)
-	}()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, r.Header.Get("User-Agent"))
+	}))
+	t.Cleanup(server.Close)
 
-	compareUA := func(t *testing.T, resp *http.Response, err error) {
-		if assert.Nil(t, err) {
-			ua, err := io.ReadAll(resp.Body)
-			assert.Nil(t, err)
-			assert.Equal(t, userAgent, string(ua))
-		}
+	tests := []struct {
+		name string
+		get  func() (*http.Response, error)
+	}{
+		{
+			name: "HttpGet",
+			get: func() (*http.Response, error) {
+				return HttpGet(server.URL)
+			},
+		},
+		{
+			name: "decorated-client",
+			get: func() (*http.Response, error) {
+				return DecoratedClient.Get(server.URL)
+			},
+		},
+		{
+			name: "default-client",
+			get: func() (*http.Response, error) {
+				return http.Get(server.URL)
+			},
+		},
+		{
+			name: "custom-client",
+			get: func() (*http.Response, error) {
+				client := &http.Client{}
+				return client.Get(server.URL)
+			},
+		},
 	}
 
-	t.Run(`HttpGet`, func(t *testing.T) {
-		for z := 0; z < 10; z++ {
-			resp, err := HttpGet(`http://` + testHost)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := tc.get()
 			if err != nil {
-				time.Sleep(time.Millisecond * 100)
-				continue
+				t.Fatalf("request error: %v", err)
 			}
-			compareUA(t, resp, err)
-		}
+			defer func() {
+				if err := resp.Body.Close(); err != nil {
+					t.Fatalf("closing response body: %v", err)
+				}
+			}()
+
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("reading response body: %v", err)
+			}
+			if got := string(body); got != ua {
+				t.Fatalf("User-Agent want %q got %q", ua, got)
+			}
+		})
+	}
+}
+
+func configureForTest(t *testing.T, name string) string {
+	t.Helper()
+
+	originalServiceName := serviceName
+	originalUserAgent := userAgent
+	originalHeader := defaultHeaders["User-Agent"]
+	originalTransport := http.DefaultTransport
+	originalClient := http.DefaultClient
+
+	t.Cleanup(func() {
+		serviceName = originalServiceName
+		userAgent = originalUserAgent
+		defaultHeaders["User-Agent"] = originalHeader
+		http.DefaultTransport = originalTransport
+		http.DefaultClient = originalClient
 	})
 
-	t.Run(`decorated-client`, func(t *testing.T) {
-		client := DecoratedClient
-		resp, err := client.Get(`http://` + testHost)
-		compareUA(t, resp, err)
-	})
-
-	t.Run(`default-client`, func(t *testing.T) {
-		resp, err := http.Get(`http://` + testHost)
-		compareUA(t, resp, err)
-	})
-
-	t.Run(`custom-client`, func(t *testing.T) {
-		client := &http.Client{}
-		resp, err := client.Get(`http://` + testHost)
-		compareUA(t, resp, err)
-	})
+	InitServiceName(name)
+	return userAgent
 }
